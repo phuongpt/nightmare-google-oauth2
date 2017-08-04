@@ -9,7 +9,7 @@ const REDIRECT_URI = 'http://localhost:' + PORT
 const BASE_URL = 'https://accounts.google.com/o/oauth2/auth'
 const GOOGLE_OAUTH2_TOKEN_URL = 'https://accounts.google.com/o/oauth2/token'
 
-const maxTimeout = 2e4
+const maxTimeout = 6e4
 const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/48.0.2564.109 Safari/537.36'
 
 const getCode = exports.getCode = function (params, callback, onChange) {
@@ -26,25 +26,29 @@ const getCode = exports.getCode = function (params, callback, onChange) {
       .viewport(800, 1600)
       .useragent(userAgent)
       .use(login)
-      .use(challenge)
 
     function login (nightmare) {
       nightmare
         .goto(url)
-        .wait('input[type=email]')
+        .wait(2000) //.wait('input[type=email]')
         .type('input[type=email]', params.email)
-        .click('#next')
-        .wait(1000)
-        .wait('input[type=password]')
-        .type('input[type=password]', params.password)
-        .click('#signIn')
-        .wait(2000)
+        .exists('#next').then(function (exists) {
+          nightmare.click(exists ? '#next' : '#identifierNext')
+          .wait(1000)
+          .wait('input[type=password]')
+          .type('input[type=password]', params.password)
+          .exists('#signIn').then(function (exists) {
+            nightmare.click(exists ? '#signIn' : "#passwordNext")
+            .wait(2000)
+            .use(challenge) // do next step
+          })
+        });
     }
 
     function challenge (nightmare) {
-      nightmare
-        .exists('#challengeform')
+        nightmare.exists('#challengeform')
         .then(function (exists) {
+          // determine next step if necessary
           if (exists) nightmare.use(doChallenge)
           else nightmare.use(signIn)
         })
@@ -60,7 +64,7 @@ const getCode = exports.getCode = function (params, callback, onChange) {
         .then(function (exists) {
           if (exists) {
             nightmare.use(assignPassword)
-            nightmare.use(login)
+            nightmare.use(login) // might cause endless loop if the challenge fails... not a big issue cause of timeout
           } else {
             nightmare.use(signIn)
           }
@@ -83,7 +87,7 @@ const getCode = exports.getCode = function (params, callback, onChange) {
     function signIn (nightmare) {
       nightmare
         .goto(url)
-        .wait()
+        .wait(2000)
         .exists('#signin-action')
         .then(function (exists) {
           if (exists) nightmare.use(selectAccount)
@@ -100,11 +104,31 @@ const getCode = exports.getCode = function (params, callback, onChange) {
 
     function submit (nightmare) {
       nightmare
-        .wait('#submit_approve_access')
-        .wait(1500)
-        .click('#submit_approve_access')
-        .wait(1500)
-        .end(noop)
+        .exists('#submit_approve_access').then(function (exists) {
+          if (!exists) {
+            nightmare.use(selectFirstAccount); // 2017 addition
+          } else {
+            nightmare
+              .wait('#submit_approve_access')
+              .wait(1500)
+              .click('#submit_approve_access')
+              .wait(1500)
+              .end(noop)
+          }
+        })
+    }
+    function selectFirstAccount (nightmare) {
+      nightmare
+        .wait(2000)
+        .evaluate(function () {
+          // Select the first account. Should be the one we are actually signing in for.
+          // The classNames are generated and cannot be known; so we use this hideous selector.
+          var btn = document.querySelector('form ul li:first-child div:first-child');
+          btn.click();
+          return btn.className;
+        }).then(function (buttonClassNames) {
+          nightmare.use(submit);
+        });
     }
   }
 }
