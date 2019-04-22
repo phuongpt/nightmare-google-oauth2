@@ -1,8 +1,10 @@
+const Nightmare = require('nightmare')
 const http = require('http')
 const request = require('request')
 const omit = require('lodash.omit')
 const parseUrl = require('url').parse
 const decamelize = require('decamelize')
+const fs = require('fs')
 
 const PORT = 8488
 const REDIRECT_URI = 'http://localhost:' + PORT
@@ -11,6 +13,10 @@ const GOOGLE_OAUTH2_TOKEN_URL = 'https://accounts.google.com/o/oauth2/token'
 
 const maxTimeout = 6e4
 const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/48.0.2564.109 Safari/537.36'
+
+const IS_VERBOSE = !!process.env.DEBUG; // booleanize
+const debugScreenshotDir = "debug-screens-nightmare-google-auth" // in run directory of project
+fs.existsSync(debugScreenshotDir) || fs.mkdirSync(debugScreenshotDir) // create if not exist
 
 const getCode = exports.getCode = function (params, callback, onChange) {
   const url = buildUrl(params)
@@ -28,16 +34,21 @@ const getCode = exports.getCode = function (params, callback, onChange) {
       .use(login)
 
     function login (nightmare) {
+      IS_VERBOSE && console.log(`[D] nightmare-google-auth.login - Logging in via ${url}`);
+
       nightmare
         .goto(url)
         .wait(2000) //.wait('input[type=email]')
         .type('input[type=email]', params.email)
         .exists('#next').then(function (exists) {
-          nightmare.click(exists ? '#next' : '#identifierNext')
+          nightmare.click(exists ? '#next' : '#identifierNext') // #identifierNext is 2017's new ID
           .wait(1000)
           .wait('input[type=password]')
           .type('input[type=password]', params.password)
           .exists('#signIn').then(function (exists) {
+            IS_VERBOSE && nightmare.screenshot(`${debugScreenshotDir}/login.png`)
+
+            // #passwordNext is 2017's new ID
             nightmare.click(exists ? '#signIn' : "#passwordNext")
             .wait(2000)
             .use(challenge) // do next step
@@ -46,22 +57,34 @@ const getCode = exports.getCode = function (params, callback, onChange) {
     }
 
     function challenge (nightmare) {
-        nightmare.exists('#challengeform')
-        .then(function (exists) {
-          // determine next step if necessary
-          if (exists) nightmare.use(doChallenge)
-          else nightmare.use(signIn)
-        })
+      nightmare.exists('#challengeform')
+      .then(function (exists) {
+        // determine next step if necessary
+        IS_VERBOSE && console.log(`[D] nightmare-google-auth.challenge - ${exists ? "NOW" : "NOT"} doing challenge`)
+
+        if (exists) {
+          nightmare.use(doChallenge)
+        } else {
+          nightmare.use(signIn)
+        }
+      })
     }
 
     function doChallenge (nightmare) {
       nightmare
         .type('input[type=text]', params.verificationEmail)
         .wait(1000)
+      
+      IS_VERBOSE && nightmare.screenshot(`${debugScreenshotDir}/doChallenge_email.png`)
+
+      nightmare
         .click('input[type=submit]')
         .wait(1000)
         .exists('input[name=ConfirmPassword]')
         .then(function (exists) {
+          IS_VERBOSE && nightmare.screenshot(`${debugScreenshotDir}/doChallenge_password.png`)
+          IS_VERBOSE && console.log(`[D] nightmare-google-auth.doChallenge - ConfirmPassword does ${exists ? "" : "NOT"} exist`)
+
           if (exists) {
             nightmare.use(assignPassword)
             nightmare.use(login) // might cause endless loop if the challenge fails... not a big issue cause of timeout
@@ -98,13 +121,15 @@ const getCode = exports.getCode = function (params, callback, onChange) {
     function selectAccount (nightmare) {
       const account = params.useAccount || ''
       nightmare
-        .wait(500)
+        .wait(1000)
         .click('#account-' + account + ' > a')
     }
 
     function submit (nightmare) {
       nightmare
         .exists('#submit_approve_access').then(function (exists) {
+          IS_VERBOSE && console.log(`[D] nightmare-google-auth.submit - ${exists ? "selecting first account" : "submitting"}`)
+
           if (!exists) {
             nightmare.use(selectFirstAccount); // 2017 addition
           } else {
@@ -133,8 +158,9 @@ const getCode = exports.getCode = function (params, callback, onChange) {
   }
 }
 
+
 const getToken = exports.getToken = function (params, callback, onChange) {
-  return getCode(params, function (err, code) {
+  let getCodeCall = getCode(params, function (err, code) {
     if (err) return callback(err)
 
     if (!params.clientSecret) {
@@ -154,23 +180,34 @@ const getToken = exports.getToken = function (params, callback, onChange) {
       uri: GOOGLE_OAUTH2_TOKEN_URL,
       form: values,
       json: true
-    }, handler)
-
-    function handler (err, res, tokens) {
-      if (!err && tokens && tokens.expires_in) {
+    }, function (reqErr, res, tokens) {
+      if (!reqErr && tokens && tokens.expires_in) {
         tokens.expiry_date = ((new Date()).getTime() + (tokens.expires_in * 1000))
         tokens = omit(tokens, 'expires_in')
       }
 
-      if (!err && tokens.error) {
-        err = new Error(tokens.error_description)
-        err.code = tokens.error
+      if (!reqErr && tokens.error) {
+        reqErr = new Error(tokens.error_description)
+        reqErr.code = tokens.error
         tokens = null
       }
 
-      callback(err, tokens)
-    }
+      IS_VERBOSE && console.log("[D] nightmare-google-auth.getToken - tokens:", tokens);
+
+      callback(reqErr, tokens)
+    })
   }, onChange)
+
+
+  new Nightmare({
+    show: IS_VERBOSE, // shows what's going on
+    dock: IS_VERBOSE, // electron shows up in OS X's dock
+    webPreferences: { partition: 'nopersist' }, // DO NOT persist cache/cookies. New session every run
+  })
+  .use(getCodeCall)
+  /*.run(function (err) {
+    if (err) callback(err)
+  })*/ // unnecessary?
 }
 
 function startCallbackServer (callback, nightmare) {
