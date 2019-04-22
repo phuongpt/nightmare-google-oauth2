@@ -38,13 +38,15 @@ const getCode = exports.getCode = function (params, callback, onChange) {
 
       nightmare
         .goto(url)
-        .wait(2000) //.wait('input[type=email]')
+        .wait(3000) //.wait('input[type=email]')
         .type('input[type=email]', params.email)
         .exists('#next').then(function (exists) {
           nightmare.click(exists ? '#next' : '#identifierNext') // #identifierNext is 2017's new ID
           .wait(1000)
           .wait('input[type=password]')
+          .wait(1000) // NEEDED as of 2019 - strange
           .type('input[type=password]', params.password)
+          .wait(350)
           .exists('#signIn').then(function (exists) {
             IS_VERBOSE && nightmare.screenshot(`${debugScreenshotDir}/login.png`)
 
